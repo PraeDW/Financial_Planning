@@ -316,179 +316,134 @@ elif st.session_state['current_step'] == 1:
 # TAB 3: ASSET ALLOCATION 
 # ==========================================
 elif st.session_state['current_step'] == 2:
-    st.header("📊 Portfolio Allocation Preference")
-    st.caption("Define your portfolio structure. The total weight must be **100%**.")
+    st.header("📊 3. Asset Allocation")
+    st.caption("Allocate your portfolio weight (%). Total must be **100%**.")
     
-    col_main1, col_main2 = st.columns([2, 1])
+    col_thai, col_us = st.columns(2)
     
-    with col_main1:
-        # --- 1. CASH ---
-        st.subheader("1. Cash & Equivalents")
-        w_cash = pct_input("Cash / Money Market (%)", "cash")
+    with col_thai:
+        st.subheader("Thai Assets (%)")
+        w_gov_1y = pct_input("Government Bond 1yr", "gov_1y")
+        w_abfth  = pct_input("Bond Fund (ABFTH)", "abfth")
+        w_seti   = pct_input("Stock Market (SETI)", "seti")
+        w_kblrmf = pct_input("Stock Fund (KBLRMF)", "kblrmf")
+        w_gld    = pct_input("Gold ETF (TH-GLD)", "gld")
+        w_ktoil  = pct_input("Oil ETF (KTOIL)", "ktoil")
+        w_reit   = pct_input("REIT (TH-REIT)", "reit")
 
-        # --- 2. STOCK SECTORS (THAI SET) ---
-        st.subheader("2. Stock")
-        c1, c2 = st.columns(2)
-        with c1:
-            w_agro = pct_input("AGRO (Agro & Food Industry) %", "agro")
-            w_consump = pct_input("CONSUMP (Consumer Products) %", "consump")
-            w_fincial = pct_input("FINCIAL (Financials) %", "fincial")
-            w_indus = pct_input("INDUS (Industrials) %", "indus")
-        with c2:
-            w_propcon = pct_input("PROPCON (Property & Construction) %", "propcon")
-            w_resourc = pct_input("RESOURC (Resources) %", "resourc")
-            w_service = pct_input("SERVICE (Services) %", "service")
-            w_tech = pct_input("TECH (Technology) %", "tech")
-        
-        total_equity = w_agro + w_consump + w_fincial + w_indus + w_propcon + w_resourc + w_service + w_tech
-        st.caption(f"Total Equity Weight: {total_equity}%")
+    with col_us:
+        st.subheader("US Assets (%)")
+        w_us_gov = pct_input("US 1yr Bond", "us_gov")
+        w_vtblx  = pct_input("US Bond Fund (VTBLX)", "vtblx")
+        w_sp500  = pct_input("S&P 500", "sp500")
+        w_vti    = pct_input("US Total Stock (VTI)", "vti")
+        w_us_gld = pct_input("US Gold (SPDR)", "us_gld")
+        w_us_oil = pct_input("US Oil (USO)", "us_oil")
+        w_us_reit= pct_input("US REIT (MSCI)", "us_reit")
 
-        # --- 3. BONDS ---
-        st.subheader("3. Bonds")
-        c3, c4 = st.columns(2)
-        with c3:
-            w_bond_aaa = pct_input("Bond Rating AAA %", "aaa")
-            w_bond_aa = pct_input("Bond Rating AA %", "aa")
-        with c4:
-            w_bond_a = pct_input("Bond Rating A %", "a")
-            w_bond_bbb = pct_input("Bond Rating BBB %", "bbb")
-        
-        total_bond = w_bond_aaa + w_bond_aa + w_bond_a + w_bond_bbb
-        st.caption(f"Total Bond Weight: {total_bond}%")
-
-        # --- 4. ALTERNATIVES ---
-        st.subheader("4. Derivatives / Alternatives")
-        w_gold = pct_input("Gold / Derivatives", "gold")
-
-    # --- CALCULATION & VALIDATION ---
-    total_weight = w_cash + total_equity + total_bond + w_gold
+    # Calculate Total
+    total_weight = (
+        w_gov_1y + w_abfth + w_seti + w_kblrmf + w_gld + w_ktoil + w_reit +
+        w_us_gov + w_vtblx + w_sp500 + w_vti + w_us_gld + w_us_oil + w_us_reit
+    )
     
-    # --- WEIGHTED RETURN ESTIMATION (Hidden Logic for Simulation) ---
-    # We assign proxy returns to these inputs so Tab 4 can run a simulation
-    # (Values are hypothetical annual averages for calculation)
-    expected_return = (
-        (w_cash * 0.015) + 
-        (total_equity * 0.08) +  # Assuming avg equity return 8%
-        (w_bond_aaa * 0.025) + (w_bond_aa * 0.030) + (w_bond_a * 0.035) + (w_bond_bbb * 0.045) +
-        (w_gold * 0.04)
-    ) / 100
-    
-    estimated_volatility = (
-        (w_cash * 0.005) + 
-        (total_equity * 0.15) + 
-        (total_bond * 0.05) + 
-        (w_gold * 0.12)
-    ) / 100
-
-    with col_main2:
-        st.markdown("### Total Weighting")
-        
-        if total_weight == 100.0:
-            st.metric("Status", "✅ Perfect", f"{total_weight:.0f}%")
-            st.success("Allocation Complete!")
-            
-            st.markdown("---")
-            st.markdown("#### Estimated Metrics")
-            st.caption("Based on your selection:")
-            st.metric("Est. Annual Return", f"{expected_return:.2%}")
-            st.metric("Est. Volatility", f"{estimated_volatility:.2%}")
-            
+    st.divider()
+    col_sum1, col_sum2 = st.columns([2, 2])
+    with col_sum2:
+        st.markdown("### Total Weight")
+        if np.isclose(total_weight, 100.0):
+            st.metric("Status", "✅ Perfect", "100%")
         elif total_weight > 100.0:
-            st.metric("Status", "❌ Over Limit", f"{total_weight:.0f}%")
-            st.error(f"Please remove {total_weight - 100:.0f}%")
+            st.metric("Status", "❌ Over Limit", f"{total_weight:.1f}%")
+            st.error(f"Remove {total_weight-100:.1f}%")
         else:
-            st.metric("Status", "⚠️ Incomplete", f"{total_weight:.0f}%")
-            st.warning(f"Please add {100 - total_weight:.0f}%")
+            st.metric("Status", "⚠️ Under Limit", f"{total_weight:.1f}%")
+            st.warning(f"Add {100-total_weight:.1f}%")
 
-        st.markdown("---")
-# --- BUTTONS FOR PAGE 3 ---
+    # --- SAVE DATA FUNCTION ---
+    def save_and_next():
+        # We manually save these inputs to a permanent dictionary
+        st.session_state['saved_weights'] = {
+            'pct_gov_1y': w_gov_1y, 'pct_abfth': w_abfth,
+            'pct_seti': w_seti, 'pct_kblrmf': w_kblrmf,
+            'pct_gld': w_gld, 'pct_ktoil': w_ktoil, 'pct_reit': w_reit,
+            'pct_us_gov': w_us_gov, 'pct_vtblx': w_vtblx,
+            'pct_sp500': w_sp500, 'pct_vti': w_vti,
+            'pct_us_gld': w_us_gld, 'pct_us_oil': w_us_oil, 'pct_us_reit': w_us_reit
+        }
+        next_step()
+
+    # --- NAV BUTTONS ---
     st.markdown("###")
     col_nav1, col_nav2, col_nav3 = st.columns([1, 8, 1])
     with col_nav1:
         st.button("⬅ Back", on_click=prev_step, use_container_width=True)
     with col_nav3:
-        # Button is disabled until weight is exactly 100%
-        st.button("Next Step ➡", on_click=next_step, type="primary", use_container_width=True, disabled=(total_weight != 100))
+        # Use the new save_and_next function
+        st.button("Next Step ➡", on_click=save_and_next, type="primary", use_container_width=True, disabled=not np.isclose(total_weight, 100.0))
 # ==========================================
-# PAGE 4: WITHDRAWAL STRATEGY (Adapted from your script)
+# PAGE 4: WITHDRAWAL STRATEGY (Fixed Save Logic)
 # ==========================================
 elif st.session_state['current_step'] == 3:
     st.header("💸 4. Withdrawal Strategy (Monte Carlo)")
 
-    # --- 1. SETUP ASSET DATA (Replaces Excel 'AssetData' Sheet) ---
-    # We use the allocation form Page 3 to determine which assets are active
-    active_assets = []
-    
-    # Map Page 3 Inputs to Default Stats (Mean, Std Dev)
-    # You can edit these defaults here to match your Excel file
+    # --- 1. SETUP ASSET DATA ---
     base_asset_map = {
-        'pct_cash':    ['Cash', 0.015, 0.005],
-        'pct_agro':    ['Stock: Agro', 0.08, 0.15],
-        'pct_consump': ['Stock: Consumer', 0.09, 0.14],
-        'pct_fincial': ['Stock: Financial', 0.10, 0.18],
-        'pct_indus':   ['Stock: Indus', 0.08, 0.16],
-        'pct_propcon': ['Stock: Prop', 0.07, 0.20],
-        'pct_resourc': ['Stock: Resource', 0.09, 0.22],
-        'pct_service': ['Stock: Service', 0.085, 0.15],
-        'pct_tech':    ['Stock: Tech', 0.12, 0.25],
-        'pct_aaa':     ['Bond: AAA', 0.025, 0.03],
-        'pct_aa':      ['Bond: AA', 0.030, 0.04],
-        'pct_a':       ['Bond: A', 0.035, 0.05],
-        'pct_bbb':     ['Bond: BBB', 0.045, 0.07],
-        'pct_gold':    ['Gold', 0.04, 0.15]
+        'pct_gov_1y':  ['TH: Gov Bond 1y',   0.022, 0.015],
+        'pct_abfth':   ['TH: Bond Fund',     0.030, 0.040],
+        'pct_seti':    ['TH: SET Index',     0.080, 0.160],
+        'pct_kblrmf':  ['TH: Stock Fund',    0.085, 0.150],
+        'pct_gld':     ['TH: Gold',          0.050, 0.140],
+        'pct_ktoil':   ['TH: Oil ETF',       0.060, 0.250],
+        'pct_reit':    ['TH: REIT',          0.065, 0.120],
+        'pct_us_gov':  ['US: 1y Bond',       0.035, 0.020],
+        'pct_vtblx':   ['US: Bond (VTBLX)',  0.040, 0.050],
+        'pct_sp500':   ['US: S&P 500',       0.100, 0.180],
+        'pct_vti':     ['US: Total Stock',   0.100, 0.185],
+        'pct_us_gld':  ['US: Gold (SPDR)',   0.050, 0.140],
+        'pct_us_oil':  ['US: Oil (USO)',     0.060, 0.300],
+        'pct_us_reit': ['US: REIT (MSCI)',   0.080, 0.170]
     }
 
-    # Build list of active assets based on user weights from Tab 3
+    saved_weights = st.session_state.get('saved_weights', {})
+    
     rows = []
     for key, (name, mu, sigma) in base_asset_map.items():
-        weight = st.session_state.get(key, 0.0) / 100.0
+        weight = saved_weights.get(key, 0.0) / 100.0
         if weight > 0:
             rows.append({"Asset": name, "Weight": weight, "Mean": mu, "Std Dev": sigma})
 
     if not rows:
-        st.error("⚠️ No assets selected in Tab 3. Please go back and allocate your portfolio.")
+        st.error("⚠️ No assets selected. Please go back to Tab 3.")
     else:
-        # Show Editable Table (Replaces reading Excel)
-        st.info("👇 **Simulation Assumptions:** You can edit the Mean (Return) and Std Dev (Risk) below.")
+        # Show Assumptions Table
+        st.info("👇 **Simulation Assumptions:**")
         df_assumptions = pd.DataFrame(rows)
-        
-        # Allow user to edit Mean/Std Dev live
+        # Use Data Editor so user can tweak assumptions live
         edited_df = st.data_editor(
-            df_assumptions, 
+            df_assumptions,
             column_config={
                 "Weight": st.column_config.NumberColumn(format="%.2f"),
                 "Mean": st.column_config.NumberColumn(format="%.3f"),
                 "Std Dev": st.column_config.NumberColumn(format="%.3f")
             },
-            disabled=["Asset", "Weight"], # Lock weight (edit in Tab 3), allow editing Mean/Std
+            disabled=["Asset", "Weight"],
             hide_index=True,
             use_container_width=True
         )
 
-        # --- 2. CALCULATE PORTFOLIO STATS ---
-        # Instead of simulating every asset individually in a slow loop, 
-        # we calculate the Weighted Portfolio Mean & Variance.
-        # This assumes annual rebalancing (matching your logic).
-        
+        # Calculate Stats from the EDITED table
         port_mean = 0.0
         port_var = 0.0
-        total_weight = 0.0
-
         for index, row in edited_df.iterrows():
-            w = row['Weight']
-            port_mean += w * row['Mean']
-            # Simplified Variance (assuming assets are independent for speed)
-            # In a full institutional app, we would use a Correlation Matrix here.
-            port_var += (w * row['Std Dev']) ** 2  
-            total_weight += w
-
+            port_mean += row['Weight'] * row['Mean']
+            port_var += (row['Weight'] * row['Std Dev']) ** 2 
         port_std = np.sqrt(port_var)
-        
-        # --- 3. SIMULATION SETTINGS ---
+
+        # Inputs
         start_value = st.session_state.get('money_port', 1000000) + st.session_state.get('money_cash', 200000)
         inflation_rate = st.session_state.get('inflation_rate', 0.03)
-        withdrawal_rate = 0.04 # Strict 4% Rule
-        target_annual_spending = start_value * withdrawal_rate
+        target_annual_spending = start_value * 0.04
 
         st.divider()
         c1, c2, c3 = st.columns(3)
@@ -496,80 +451,179 @@ elif st.session_state['current_step'] == 3:
         c2.metric("Simulated Volatility", f"{port_std:.2%}")
         c3.metric("Initial Withdrawal", f"{target_annual_spending:,.0f} THB", "4% Rule")
 
+        # --- RUN SIMULATION BUTTON ---
         if st.button("🚀 Run Monte Carlo Simulation", type="primary"):
             
             with st.spinner("Running 10,000 simulations..."):
                 years = 30
                 sims = 10000 
-                
-                # --- VECTORIZED ENGINE (Fast) ---
-                # 1. Generate all random market shocks at once
                 random_shock = np.random.normal(port_mean, port_std, (years, sims))
-                
-                # 2. Initialize Arrays
                 portfolio_paths = np.zeros((years + 1, sims))
                 portfolio_paths[0] = start_value
-                
-                # 3. Create Inflation Array [1, 1.03, 1.0609, ...]
                 inflation_factors = (1 + inflation_rate) ** np.arange(years)
                 
-                # 4. Simulation Loop (Year by Year)
                 for t in range(1, years + 1):
                     prev_balance = portfolio_paths[t-1]
-                    
-                    # LOGIC MATCH: 
-                    # 1. Calculate Withdrawal amount (Start of Year)
                     current_withdrawal = target_annual_spending * inflation_factors[t-1]
-                    
-                    # 2. Subtract Withdrawal (Check for Ruin)
                     post_withdrawal = np.maximum(prev_balance - current_withdrawal, 0)
-                    
-                    # 3. Apply Growth
                     growth = post_withdrawal * (1 + random_shock[t-1])
-                    
-                    # 4. Store
                     portfolio_paths[t] = growth
 
-                # --- 5. RESULTS & PLOTTING ---
-                # Success Rate
+                # Calculate Results
                 final_values = portfolio_paths[-1]
-                success_count = np.sum(final_values > 0)
-                success_rate = (success_count / sims) * 100
+                success_rate = (np.sum(final_values > 0) / sims) * 100
+                median_result = np.median(final_values)
                 
-                if success_rate > 90: color = "green"
-                elif success_rate > 75: color = "orange"
-                else: color = "red"
-                
-                st.write(f"### 🎲 Success Rate: :{color}[{success_rate:.2f}%]")
-                st.caption(f"Portfolio survived {years} years in {success_count:,} out of {sims:,} simulations.")
+                # --- SAVE RESULTS TO SESSION STATE (Fixes the NameError) ---
+                st.session_state['sim_run'] = True
+                st.session_state['sim_success_rate'] = success_rate
+                st.session_state['sim_median_result'] = median_result
+                st.session_state['sim_paths'] = portfolio_paths  # We save the paths for the chart
 
-                # Visualization (Percentile Cone)
-                p10 = np.percentile(portfolio_paths, 10, axis=1)
-                p50 = np.percentile(portfolio_paths, 50, axis=1)
-                p90 = np.percentile(portfolio_paths, 90, axis=1)
-                x_years = np.arange(years + 1)
-                
-                fig, ax = plt.subplots(figsize=(10, 5))
-                
-                
-                # Shaded Cone (10th - 90th)
-                ax.fill_between(x_years, p10, p90, color='blue', alpha=0.15, label="10th-90th Percentile")
-                # Median Line
-                ax.plot(x_years, p50, color='navy', linewidth=2, label="Median (50th)")
-                # Zero Line
-                ax.axhline(0, color='red', linestyle='--', linewidth=1, label="Depleted")
-                
-                ax.set_title(f"30-Year Wealth Projection", fontsize=14)
-                ax.set_xlabel("Years in Retirement")
-                ax.set_ylabel("Portfolio Value (THB)")
-                ax.grid(True, linestyle='--', alpha=0.3)
-                ax.legend(loc="upper left")
-                
-                # Millions Formatter
-                def millions(x, pos): return f'{x/1e6:.1f}M'
-                ax.yaxis.set_major_formatter(plt.FuncFormatter(millions))
-                
-                st.pyplot(fig)
+        # --- DISPLAY RESULTS (Only if Simulation has run) ---
+        if st.session_state.get('sim_run', False):
+            
+            # Retrieve data from session state
+            success_rate = st.session_state['sim_success_rate']
+            median_result = st.session_state['sim_median_result']
+            portfolio_paths = st.session_state['sim_paths']
+            years = 30
+
+            # 1. Metric Cards
+            if success_rate > 90: color = "green"
+            elif success_rate > 75: color = "orange"
+            else: color = "red"
+            st.write(f"### 🎲 Success Rate: :{color}[{success_rate:.1f}%]")
+
+            # 2. Chart
+            p10 = np.percentile(portfolio_paths, 10, axis=1)
+            p50 = np.percentile(portfolio_paths, 50, axis=1)
+            p90 = np.percentile(portfolio_paths, 90, axis=1)
+            x_years = np.arange(years + 1)
+            
+            fig, ax = plt.subplots(figsize=(10, 5))
+            ax.fill_between(x_years, p10, p90, color='blue', alpha=0.15, label="10th-90th Pctl")
+            ax.plot(x_years, p50, color='navy', linewidth=2, label="Median")
+            ax.axhline(0, color='red', linestyle='--', linewidth=1)
+            ax.set_title("30-Year Survival Analysis")
+            ax.set_ylabel("Portfolio Value (THB)")
+            ax.legend(loc="upper left")
+            
+            def millions(x, pos): return f'{x/1e6:.1f}M'
+            ax.yaxis.set_major_formatter(plt.FuncFormatter(millions))
+            st.pyplot(fig)
+
+            # ==========================================
+            # 💾 SAVE DATA (MULTI-PAGE PDF w/ MATPLOTLIB)
+            # ==========================================
+            st.divider()
+            st.subheader("💾 Save Your Plan")
+
+            col_dl1, col_dl2 = st.columns(2)
+
+            # --- 1. PREPARE DATA AS PANDAS DATAFRAMES ---
+            
+            # Data for Page 1 (Health)
+            df_health = pd.DataFrame([
+                ["Current Age", str(st.session_state.get('current_age', 30))],
+                ["Retirement Age", str(st.session_state.get('retire_age', 60))],
+                ["Investable Assets", f"{start_value:,.0f}"],
+                ["Total Debt", f"{st.session_state.get('money_debt_home',0) + st.session_state.get('money_debt_car',0):,.0f}"],
+                ["Monthly Income", f"{st.session_state.get('money_inc_sal',0) + st.session_state.get('money_inc_bonus',0):,.0f}"],
+                ["Monthly Savings", f"{st.session_state.get('money_save',0):,.0f}"],
+            ], columns=["Item", "Value"])
+
+            # Data for Page 2 (Simulation)
+            data_sim = [
+                ["Success Rate (30y)", f"{success_rate:.1f}%"],
+                ["Median End Value", f"{median_result:,.0f} THB"],
+                ["Exp. Annual Return", f"{port_mean*100:.2f}%"],
+                ["Volatility (Risk)", f"{port_std*100:.2f}%"],
+                ["Initial Withdrawal", f"{target_annual_spending:,.0f} THB"],
+            ]
+            # Append Asset Allocation to Page 2
+            saved_weights = st.session_state.get('saved_weights', {})
+            for key, val in saved_weights.items():
+                if val > 0:
+                    data_sim.append([f"Alloc: {key.replace('pct_', '').upper()}", f"{val:.2f}%"])
+            
+            df_sim = pd.DataFrame(data_sim, columns=["Metric", "Value"])
+
+            # --- 2. PDF GENERATOR FUNCTION ---
+            import io
+            from matplotlib.backends.backend_pdf import PdfPages
+
+            def create_multipage_pdf():
+                buffer = io.BytesIO()
+                with PdfPages(buffer) as pdf:
+                    
+                    # --- PAGE 1: Health Table ---
+                    fig1, ax1 = plt.subplots(figsize=(8, 11))
+                    ax1.axis('tight')
+                    ax1.axis('off')
+                    ax1.set_title("Page 1: Financial Health Profile", fontsize=16, y=0.95)
+                    
+                    table1 = ax1.table(cellText=df_health.values, colLabels=df_health.columns, loc='center', cellLoc='left')
+                    table1.scale(1, 2) # Make rows taller
+                    table1.auto_set_font_size(False)
+                    table1.set_fontsize(12)
+                    
+                    # Grey Header
+                    for (i, j), cell in table1.get_celld().items():
+                        if i == 0: cell.set_facecolor('#e6e6e6')
+
+                    pdf.savefig(fig1, bbox_inches='tight')
+                    plt.close(fig1)
+
+                    # --- PAGE 2: Simulation Table ---
+                    fig2, ax2 = plt.subplots(figsize=(8, 11))
+                    ax2.axis('tight')
+                    ax2.axis('off')
+                    ax2.set_title("Page 2: Portfolio & Simulation Results", fontsize=16, y=0.95)
+                    
+                    table2 = ax2.table(cellText=df_sim.values, colLabels=df_sim.columns, loc='center', cellLoc='left')
+                    table2.scale(1, 1.5)
+                    table2.auto_set_font_size(False)
+                    table2.set_fontsize(10)
+                    
+                    for (i, j), cell in table2.get_celld().items():
+                        if i == 0: cell.set_facecolor('#e6e6e6')
+
+                    pdf.savefig(fig2, bbox_inches='tight')
+                    plt.close(fig2)
+
+                    # --- PAGE 3: The Chart ---
+                    # We redraw the cone chart just for the PDF
+                    fig3, ax3 = plt.subplots(figsize=(10, 6))
+                    
+                    # Re-calc percentiles (quick access)
+                    p10 = np.percentile(portfolio_paths, 10, axis=1)
+                    p50 = np.percentile(portfolio_paths, 50, axis=1)
+                    p90 = np.percentile(portfolio_paths, 90, axis=1)
+                    x_years = np.arange(years + 1)
+
+                    ax3.fill_between(x_years, p10, p90, color='blue', alpha=0.15, label="10th-90th Pctl")
+                    ax3.plot(x_years, p50, color='navy', linewidth=2, label="Median")
+                    ax3.axhline(0, color='red', linestyle='--', linewidth=1)
+                    ax3.set_title("Page 3: 30-Year Wealth Projection", fontsize=14)
+                    ax3.set_ylabel("Portfolio Value (THB)")
+                    ax3.legend(loc="upper left")
+                    
+                    pdf.savefig(fig3)
+                    plt.close(fig3)
+
+                return buffer.getvalue()
+
+            # --- 3. DOWNLOAD BUTTONS ---
+            with col_dl1:
+                # PDF Export (Multi-page)
+                pdf_bytes = create_multipage_pdf()
+                st.download_button(
+                    label="📕 Download Report (.pdf)",
+                    data=pdf_bytes,
+                    file_name="financial_report.pdf",
+                    mime="application/pdf"
+                )
 
     # --- NAV BUTTONS ---
     st.markdown("###")
