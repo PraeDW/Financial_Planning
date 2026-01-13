@@ -2,164 +2,285 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+import io
+from matplotlib.backends.backend_pdf import PdfPages
+import matplotlib.ticker as mtick
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(page_title="Thai Financial Planner", layout="wide")
 st.title("Post Retirement Financial Planner")
 
-# --- SESSION STATE SETUP (For Navigation) ---
-if 'current_step' not in st.session_state:
-    st.session_state['current_step'] = 0
+# ==========================================
+# 🧠 CORE SIMULATION ENGINE
+# ==========================================
+class RetirementSimulator:
+    def __init__(self):
+        self.life_expectancy = {
+            60: 24, 61: 23, 62: 22, 63: 21, 64: 20, 65: 19, 66: 18, 67: 17,
+            68: 16, 69: 15, 70: 14, 71: 13, 72: 12, 73: 11, 74: 10, 75: 9,
+            76: 8, 77: 7, 78: 6, 79: 5, 80: 4, 81: 3, 82: 2, 83: 1, 84: 1
+        }
+    
+    def get_life_expectancy(self, current_age):
+        if current_age in self.life_expectancy:
+            return self.life_expectancy[current_age]
+        elif current_age > max(self.life_expectancy.keys()):
+            return 1
+        else:
+            return max(self.life_expectancy.values())
+    
+    def simulate_returns(self, portfolio_allocation, asset_stats, n_simulations, n_years):
+        assets_list = list(portfolio_allocation.keys())
+        weights = np.array([portfolio_allocation[asset] for asset in assets_list])
+        means = np.array([asset_stats[asset]['mean'] for asset in assets_list])
+        stds = np.array([asset_stats[asset]['std'] for asset in assets_list])
+        
+        n_assets = len(assets_list)
+        # Dynamic Correlation Matrix
+        correlation_matrix = np.eye(n_assets) + 0.4 * (np.ones((n_assets, n_assets)) - np.eye(n_assets))
+        cov_matrix = np.outer(stds, stds) * correlation_matrix
+        
+        portfolio_returns = np.zeros((n_simulations, n_years))
+        for sim in range(n_simulations):
+            asset_returns = np.random.multivariate_normal(means, cov_matrix, n_years)
+            portfolio_returns[sim] = asset_returns @ weights
+        return portfolio_returns
 
-def update_nav():
-    st.session_state['nav_radio'] = steps[st.session_state['current_step']]
+    # --- STRATEGIES ---
+    def basic_strategy(self, initial_portfolio, withdrawal_rate, inflation_rate, returns, years):
+        portfolio_value = initial_portfolio
+        withdrawal = initial_portfolio * withdrawal_rate
+        balances = [portfolio_value]
+        for year in range(years):
+            portfolio_value -= withdrawal
+            if portfolio_value <= 0:
+                balances.extend([0] * (years - year))
+                break
+            portfolio_value *= (1 + returns[year])
+            balances.append(max(0, portfolio_value))
+            withdrawal *= (1 + inflation_rate)
+        return balances
+
+    def forgoing_inflation_strategy(self, initial_portfolio, withdrawal_rate, inflation_rate, returns, years):
+        portfolio_value = initial_portfolio
+        withdrawal = initial_portfolio * withdrawal_rate
+        balances = [portfolio_value]
+        prev_balance = portfolio_value
+        for year in range(years):
+            portfolio_value -= withdrawal
+            if portfolio_value <= 0:
+                balances.extend([0] * (years - year))
+                break
+            portfolio_value *= (1 + returns[year])
+            balances.append(max(0, portfolio_value))
+            if portfolio_value > prev_balance:
+                withdrawal *= (1 + inflation_rate)
+            prev_balance = portfolio_value
+        return balances
+
+    def rmd_strategy(self, initial_portfolio, starting_age, returns, years):
+        portfolio_value = initial_portfolio
+        current_age = starting_age
+        balances = [portfolio_value]
+        for year in range(years):
+            life_exp = self.get_life_expectancy(current_age)
+            withdrawal = portfolio_value / life_exp if life_exp > 0 else portfolio_value
+            portfolio_value -= withdrawal
+            if portfolio_value <= 0:
+                balances.extend([0] * (years - year))
+                break
+            portfolio_value *= (1 + returns[year])
+            balances.append(max(0, portfolio_value))
+            current_age += 1
+        return balances
+
+    def guardrails_strategy(self, initial_portfolio, withdrawal_rate, inflation_rate, returns, years):
+        portfolio_value = initial_portfolio
+        withdrawal = initial_portfolio * withdrawal_rate
+        initial_rate = withdrawal_rate
+        balances = [portfolio_value]
+        for year in range(years):
+            portfolio_value -= withdrawal
+            if portfolio_value <= 0:
+                balances.extend([0] * (years - year))
+                break
+            portfolio_value *= (1 + returns[year])
+            balances.append(max(0, portfolio_value))
+            current_rate = withdrawal / portfolio_value if portfolio_value > 0 else 0
+            if current_rate < initial_rate * 0.8: withdrawal *= 1.10
+            elif current_rate > initial_rate * 1.2: withdrawal *= 0.90
+            else: withdrawal *= (1 + inflation_rate)
+        return balances
+
+    def run_simulation(self, initial_portfolio, portfolio_allocation, asset_stats, 
+                       withdrawal_strategy, withdrawal_rate, n_simulations,
+                       years, inflation_rate, starting_age):
+        
+        returns = self.simulate_returns(portfolio_allocation, asset_stats, n_simulations, years)
+        all_balances = []
+        
+        for sim in range(n_simulations):
+            if withdrawal_strategy == "Basic Strategy":
+                balances = self.basic_strategy(initial_portfolio, withdrawal_rate, inflation_rate, returns[sim], years)
+            elif withdrawal_strategy == "Forgoing Inflation":
+                balances = self.forgoing_inflation_strategy(initial_portfolio, withdrawal_rate, inflation_rate, returns[sim], years)
+            elif withdrawal_strategy == "RMD Strategy":
+                balances = self.rmd_strategy(initial_portfolio, starting_age, returns[sim], years)
+            elif withdrawal_strategy == "Guardrails":
+                balances = self.guardrails_strategy(initial_portfolio, withdrawal_rate, inflation_rate, returns[sim], years)
+            all_balances.append(balances)
+        
+        all_balances = np.array(all_balances)
+        final_values = all_balances[:, -1]
+        
+        return {
+            'survival_rate': np.sum(final_values > 0) / n_simulations,
+            'median_balance': np.median(all_balances, axis=0),
+            'percentile_10': np.percentile(all_balances, 10, axis=0),
+            'percentile_90': np.percentile(all_balances, 90, axis=0),
+            'returns_mean': np.mean(returns)
+        }
+
+    def recommend_improvements(self, current_survival_rate, portfolio_allocation, withdrawal_rate, min_survival_rate=0.85):
+        recommendations = []
+        if current_survival_rate >= min_survival_rate:
+            return ["✅ Your strategy meets the target survival rate!"]
+        if withdrawal_rate > 0.03:
+            rec_rate = withdrawal_rate * 0.9
+            recommendations.append(f"📉 **Reduce Spending:** Try lowering withdrawal from {withdrawal_rate*100:.1f}% to {rec_rate*100:.1f}%.")
+        equity_keys = [k for k in portfolio_allocation.keys() if 'Equity' in k or 'SET' in k or 'S&P' in k or 'Tech' in k]
+        equity_weight = sum(portfolio_allocation[k] for k in equity_keys)
+        if equity_weight < 0.4:
+            recommendations.append(f"📈 **Increase Growth:** Your Equity allocation is low ({equity_weight*100:.0f}%). Consider 50-60%.")
+        elif equity_weight > 0.8:
+            recommendations.append(f"🛡️ **Reduce Risk:** Your Equity allocation is very high ({equity_weight*100:.0f}%). Consider adding Bonds.")
+        recommendations.append("🔄 **Change Strategy:** Try 'Guardrails' or 'Forgoing Inflation' which adapt to market drops.")
+        return recommendations
+
+    def find_optimal_withdrawal_rate(self, initial_portfolio, portfolio_allocation, asset_stats,
+                                     withdrawal_strategy, years, inflation_rate, starting_age, min_survival_rate=0.85):
+        low, high = 0.01, 0.10
+        best_rate = 0.01
+        for _ in range(10): 
+            mid = (low + high) / 2
+            res = self.run_simulation(initial_portfolio, portfolio_allocation, asset_stats, 
+                                      withdrawal_strategy, mid, 500, years, inflation_rate, starting_age)
+            if res['survival_rate'] >= min_survival_rate:
+                best_rate = mid
+                low = mid
+            else:
+                high = mid
+        return best_rate
+
+# ==========================================
+# UI HELPER FUNCTIONS
+# ==========================================
+if 'current_step' not in st.session_state: st.session_state['current_step'] = 0
+steps = ["👤 1. ข้อมูลผู้ใช้", "🧩 2.แบบประเมินความเสี่ยง", "📊 3.จัดสรรพอร์ตโฟลิโอ", "💸 4. กลยุทธ์การถอนเงิน"]
+
+def update_nav(): st.session_state['nav_radio'] = steps[st.session_state['current_step']]
 def next_step():
-    if st.session_state['current_step'] < len(steps) - 1:
+    if st.session_state['current_step'] < len(steps)-1: 
         st.session_state['current_step'] += 1
-        update_nav() # Force radio button to update
-
+        update_nav()
 def prev_step():
-    if st.session_state['current_step'] > 0:
+    if st.session_state['current_step'] > 0: 
         st.session_state['current_step'] -= 1
-        update_nav() # Force radio button to update
+        update_nav()
+def jump_step(): st.session_state['current_step'] = steps.index(st.session_state['nav_radio'])
 
-def jump_to_step():
-    # This runs when the user manually clicks the Radio Button
-    selected_step_name = st.session_state['nav_radio']
-    st.session_state['current_step'] = steps.index(selected_step_name)
+def money_input(label, default, key):
+    k = f"m_{key}"
+    if k not in st.session_state: st.session_state[k] = f"{default:,.0f}"
+    def on_chg():
+        try: st.session_state[k] = f"{float(str(st.session_state[k]).replace(',','')):,.0f}"
+        except: pass
+    st.text_input(label, key=k, on_change=on_chg)
+    try: return float(str(st.session_state[k]).replace(',', ''))
+    except: return 0.0
 
-# --- HELPER FUNCTIONS ---
-def money_input(label, default_value, key_suffix):
-    user_text = st.text_input(
-        label, 
-        value=f"{default_value:,.0f}", 
-        key=f"money_{key_suffix}"
-    )
-    try:
-        clean_value = float(user_text.replace(",", ""))
-    except ValueError:
-        clean_value = 0.0
-    return clean_value
-
-def pct_input(label, key_suffix):
-    """Helper for percentage inputs"""
-    return st.number_input(label, min_value=0.0, max_value=100.0, value=0.0, step=5.0, key=f"pct_{key_suffix}")
+def pct_input(label, key):
+    return st.number_input(f"{label} (%)", 0.0, 100.0, 0.0, 5.0, key=f"p_{key}", format="%.1f")
 
 # --- NAVIGATION ---
-steps = ["👤 1. User Infomation", "🧩 2. Risk Profile", "📊 3. Portfolio Allocation Preference", "💸 4. Withdrawal Strategy"]
-# We ensure the key 'nav_radio' is initialized
-if 'nav_radio' not in st.session_state:
-    st.session_state['nav_radio'] = steps[0]
-
-st.radio(
-    "Go to step:", 
-    steps, 
-    key="nav_radio", # Linked to session state
-    horizontal=True,
-    label_visibility="collapsed",
-    on_change=jump_to_step # Triggers when user clicks the dots
-)
-st.progress((st.session_state['current_step'] + 1) / len(steps))
-st.markdown("---")
+if 'nav_radio' not in st.session_state: st.session_state['nav_radio'] = steps[0]
+st.radio("Go to:", steps, key="nav_radio", horizontal=True, label_visibility="collapsed", on_change=jump_step)
+st.progress((st.session_state['current_step'] + 1)/len(steps))
+st.divider()
 
 # ==========================================
-# TAB 1: USER INFORMATION
+# PAGE 1: FINANCIAL HEALTH CHECK (BLANK INPUTS)
 # ==========================================
 if st.session_state['current_step'] == 0:
-    st.header("👤 1. Personal Information (ข้อมูลส่วนตัว)")
-
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        name = st.text_input("Full Name (ชื่อ-นามสกุล)", value="User")
-    with col2:
-        current_age = st.number_input("Current Age (อายุปัจจุบัน)", 20, 100, 30)
-    with col3:
-        retire_age = st.number_input("Retirement Age (อายุเกษียณ)", current_age + 1, 100, 60)
-    with col4:
-        life_expectancy = st.number_input("Expectation Age (อายุขัย)", retire_age + 1, 120, 85)
-
-    st.markdown("---")
-    st.header("2. Asset Information (ทรัพย์สิน)")
+    st.header("👤 1. ข้อมูลผู้ใช้ (Financial Health)")
     
-    c1, c2 = st.columns(2)
-    with c1:
-        st.subheader("Liquid Assets (สินทรัพย์สภาพคล่อง)")
-        portfolio_val = money_input("Current Portfolio Value (หุ้น/กองทุน)", 0, "port")
-        bank_cash = money_input("Total Cash in Bank (เงินสด/เงินฝาก)", 0, "cash")
-        total_liquid_assets = portfolio_val + bank_cash
-        st.metric("💰 Total Investable Assets", f"{total_liquid_assets:,.2f} THB")
+    st.subheader("A. ข้อมูลส่วนตัว")
+    c1, c2, c3, c4 = st.columns(4)
+    with c1: st.text_input("ชื่อ นามสกุล", value="")
+    with c2: st.session_state['current_age'] = st.number_input("อายุปัจจุบัน", 0, 100, 0)
+    with c3: st.session_state['retire_age'] = st.number_input("อายุเกษียณ", 0, 100, 0)
+    with c4: st.number_input("อายุขัย", 0, 120, 0)
     
-    with c2:
-        st.subheader("Fixed Assets (สินทรัพย์ถาวร)")
-        invest_property = money_input("Investment Property (อสังหาฯ)", 0, "prop")
-        other_assets = money_input("Other Assets (ทองคำ/รถยนต์)", 0, "other")
-        total_fixed = invest_property + other_assets
-        st.metric("🏠 Total Fixed Assets", f"{total_fixed:,.2f} THB")
-        
-    st.success(f"🏆 **Total Net Worth: {total_liquid_assets + total_fixed:,.2f} THB**")
+    st.divider()
+    st.subheader("B. ทรัพย์สิน (Assets)")
+    ac1, ac2 = st.columns(2)
+    with ac1:
+        st.markdown("💰 **สินทรัพย์เพื่อการลงทุน**")
+        money_cash = money_input("เงินสด/เงินฝาก", 0, "cash_dep")
+        money_fund = money_input("กองทุนรวม", 0, "fund")
+        money_stock = money_input("หุ้น/พันธบัตร/ทอง", 0, "stock")
+        investable_assets = money_cash + money_fund + money_stock
+    with ac2:
+        st.markdown("🏠 **สินทรัพย์ส่วนตัว**")
+        asset_home = money_input("บ้าน/คอนโด", 0, "home")
+        asset_car = money_input("รถยนต์", 0, "car")
+        personal_assets = asset_home + asset_car + money_input("อื่นๆ", 0, "other")
 
-    st.markdown("---")
-    # --- 3. INCOME INFORMATION (Post-Retirement Estimation) ---
-    st.header("3. Expected Income (Post-Retirement)")
-    st.caption("Enter the monthly income you expect to receive *after* you retire.")
+    st.divider()
+    st.subheader("C. หนี้สิน (Debt)")
+    lc1, lc2 = st.columns(2)
+    with lc1:
+        debt_home = money_input("หนี้บ้าน", 0, "debt_home")
+        debt_car = money_input("หนี้รถ", 0, "debt_car")
+    with lc2:
+        debt_cc = money_input("บัตรเครดิต", 0, "debt_cc")
+        total_debt = debt_home + debt_car + debt_cc + money_input("หนี้สินอื่น", 0, "debt_other")
+
+    st.divider()
+    st.subheader("D. กระแสเงินสด (Cash Flow)")
+    cc1, cc2 = st.columns(2)
+    with cc1:
+        st.markdown("📥 **รายได้**")
+        income = money_input("เงินเดือน (สุทธิ)", 0, "inc_sal") + money_input("โบนัส/อื่นๆ", 0, "inc_bonus")
+    with cc2:
+        st.markdown("📤 **รายจ่าย**")
+        expense = money_input("รายจ่ายคงที่", 0, "exp_fix") + money_input("รายจ่ายแปรผัน", 0, "exp_var")
+
+    monthly_savings = income - expense
+
+    st.markdown("### 📊 สรุปสถานะการเงิน")
+    net_worth = (investable_assets + personal_assets) - total_debt
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("มูลค่าสุทธิ", f"{net_worth:,.0f}")
+    m2.metric("เงินลงทุนได้", f"{investable_assets:,.0f}")
+    m3.metric("เงินออม/เดือน", f"{monthly_savings:,.0f}")
+    m4.metric("หนี้สินรวม", f"{total_debt:,.0f}")
+
+    if monthly_savings < 0:
+        st.error(f"⚠️ รายจ่ายมากกว่ารายได้ {abs(monthly_savings):,.0f} บาท")
     
-    ci1, ci2, ci3 = st.columns(3)
-    with ci1:
-        gov_benefit = st.number_input("Government Benefit (Social Security/Pension) (THB/Month)", value=0, step=500)
-    with ci2:
-        fixed_income = st.number_input("Fixed Income (Annuities/Dividends/Rent) (THB/Month)", value=0, step=1000)
-    with ci3:
-        other_income = st.number_input("Other Post-Retirement Income (THB/Month)", value=0, step=1000)
-
-    total_monthly_income = gov_benefit + fixed_income + other_income
+    st.session_state.update({'start_port': investable_assets, 'money_save': monthly_savings, 'money_debt': total_debt})
+    st.session_state['inflation'] = st.slider("เงินเฟ้อคาดการณ์ (%)", 0.0, 10.0, 3.0, 0.1) / 100
     
-    st.info(f"💵 **Guaranteed Monthly Income after Retirement:** {total_monthly_income:,.2f} THB")
+    c_nav1, c_nav2 = st.columns([8, 1])
+    with c_nav2: st.button("Next Step ➡", on_click=next_step, type="primary", disabled=(monthly_savings<0))
 
-    st.markdown("---")
-
-    # --- 4. EXPENSE INFORMATION (The "Burn Rate") ---
-    st.header("4. Expense Information (Current)")
-    st.caption("This helps estimate your lifestyle cost. We assume this adjusts for inflation later.")
-
-    ce1, ce2 = st.columns(2)
-    with ce1:
-        insurance = st.number_input("Insurance Premiums (THB/Yearly)", value=0)
-        installments = st.number_input("Installments (Car/House) (THB/Month)", value=0)
-        debt_obligation = st.number_input("Other Debt Obligations (THB/Month)", value=0)
-    
-    with ce2:
-        nursing = st.number_input("Nursing Home / Caretaker (Estimated Future Need) (THB/Month)", value=0)
-        subscription = st.number_input("Subscriptions (Netflix/Gym/Internet) (THB/Month)", value=0)
-        other_expense = st.number_input("General Living (Food/Transport/Utilities) (THB/Month)", value=0)
-
-    total_monthly_expense = insurance/12 + installments + debt_obligation + nursing + subscription + other_expense
-    
-    # Financial Health Snapshot
-    st.error(f"💸 **Total Monthly Expenses:** {total_monthly_expense:,.2f} THB")
-    
-    st.markdown("---")
-
-    st.header("5. Planning Assumptions")
-    pc1, pc2 = st.columns(2)
-    with pc1:
-        current_savings = money_input("Monthly Savings (ออมเพิ่ม)", 0, "save")
-        inflation_rate = st.slider("Inflation Rate (%)", 0.0, 10.0, 2.0, 0.1) / 100
-    with pc2:
-        replacement_ratio = st.slider("Expense Replacement Ratio (%): Estimate how much money you will need to spend in retirement compared to what you spend today", 50, 120, 70)
-        
-        # --- BUTTONS FOR PAGE 1 ---
-    st.markdown("###")
-    col_nav1, col_nav2 = st.columns([8, 1])
-    with col_nav2:
-        st.button("Next Step ➡", on_click=next_step, type="primary", use_container_width=True)
 # ==========================================
-# TAB 2: RISK ASSESSMENT (Scoring Only)
+# PAGE 2: RISK ASSESSMENT (Thai Questions Preserved)
 # ==========================================
 elif st.session_state['current_step'] == 1:
-    st.header("🧩 แบบประเมินความเสี่ยง (Risk Assessment)")
-    st.caption("กรุณาเลือกคำตอบให้ครบทั้ง 10 ข้อ")
-
-    # --- 1. DATA STRUCTURE (Mapping your Q1-Q10 exactly) ---
+    st.header("🧩 2. แบบประเมินความเสี่ยง")
+    
     questions_data = [
         {
             "q": "Q1: ปัจจุบันคุณกำลังอยู่ในช่วงชีวิตใด",
@@ -210,7 +331,7 @@ elif st.session_state['current_step'] == 1:
             ]
         },
         {
-            "q": "Q7: การได้ไปท่องเที่ยวต่างประเทศแบบหรูหรา... ทว่าโดนเลิกจ้าง...",
+            "q": "Q7: การได้ไปท่องเที่ยวต่างประเทศแบบหรูหรา เป็นความใฝ่ฝันของคุณที่อุตส่าห์เก็บหอมรอมริบมานานหลายปี ทว่าก่อนจองโปรแกรมท่องเที่ยว คุณโดนเลิกจ้างกะทันหันจากนโยบายลดจำนวนพนักงานของบริษัท คุณจะตัดสินใจอย่างไร",
             "choices": [
                 {"label": "ยกเลิกโปรแกรมท่องเที่ยว จนกว่าจะหางานใหม่ได้", "score": 1},
                 {"label": "เปลี่ยนแผนท่องเที่ยว ไปแบบประหยัดแทน", "score": 2},
@@ -218,7 +339,7 @@ elif st.session_state['current_step'] == 1:
             ]
         },
         {
-            "q": "Q8: คุณได้ร่วมรายการเกมโชว์... คุณจะเลือกอย่างไร",
+            "q": "Q8: คุณได้ร่วมรายการเกมโชว์ เล่นได้ถึงรอบลึกๆ และมาถึงทางเลือกที่ว่าจะเล่นต่อหรือหยุดเล่น ด้วยเงื่อนไขต่างๆ คุณจะเลือกอย่างไร",
             "choices": [
                 {"label": "หยุดเล่นแล้วรับเงินรางวัล 30,000 บาท", "score": 1},
                 {"label": "เล่นต่อกับคำถาม 2 ตัวเลือก ตอบถูกรับเงิน 60,000 บาท ตอบผิดไม่ได้อะไรเลย", "score": 2},
@@ -226,7 +347,7 @@ elif st.session_state['current_step'] == 1:
             ]
         },
         {
-            "q": "Q9: เพื่อนชวนลงทุนซื้อที่ดิน... คุณจะร่วมลงทุนเมื่อ...",
+            "q": "Q9: เพื่อนของคุณที่เก่งด้านการค้าที่ดิน มาชวนลงทุนซื้อที่ดินด้วยกัน และคาดว่าราคามีโอกาสจะเพิ่มจากตารางวาละ 20,000 บาท เป็น 40,000 บาท ในอีก 1 ปีข้างหน้า แต่ก็มีโอกาสที่ราคาจะไม่เพิ่มขึ้นอยู่เหมือนกัน คุณจะร่วมลงทุนก็ต่อเมื่อโอกาสที่ราคาที่ดินจะเพิ่มขึ้นเป็นแบบใด",
             "choices": [
                 {"label": "ถึงจะเป็นไปได้น้อย ก็อยากลงทุนด้วย", "score": 3},
                 {"label": "ต้องมีความเป็นไปได้ปานกลาง ถึงจะลงทุนด้วย", "score": 2},
@@ -234,7 +355,7 @@ elif st.session_state['current_step'] == 1:
             ]
         },
         {
-            "q": "Q10: เจ้าของธุรกิจชวนทำงาน... คุณจะเลือกรับผลตอบแทนแบบใด",
+            "q": "Q10: เจ้าของธุรกิจแห่งหนึ่งชวนคุณไปทำงานด้วย โดยมีเงื่อนไขระหว่าง ให้รับผลตอบแทนเป็นเงินเดือนที่แน่นอน หรือรับเงินเดือนน้อยหน่อยแต่มีค่านายหน้าตามผลงานยอดขายที่ทำได้ คุณจะเลือกรับผลตอบแทนแบบใด",
             "choices": [
                 {"label": "เอารายได้แน่นอนดีกว่า เลือกรับเงินเดือนเป็นหลัก ค่านายหน้านิดหน่อย", "score": 1},
                 {"label": "เลือกแบบสมดุล รับเงินเดือนครึ่งหนึ่ง ค่านายหน้าอีกครึ่งหนึ่ง", "score": 2},
@@ -243,394 +364,194 @@ elif st.session_state['current_step'] == 1:
         }
     ]
 
-    # --- 2. RENDER LOOP ---
     total_score = 0
     all_answered = True
     
-    # วนลูปสร้างคำถามอัตโนมัติ
     for i, item in enumerate(questions_data):
         st.subheader(item["q"])
-        
-        # ใช้ format_func เพื่อแสดงเฉพาะข้อความ (ซ่อนคะแนนไว้ข้างหลัง)
-        selected_choice = st.radio(
-            f"เลือกคำตอบข้อ {i+1}",
-            options=item["choices"],
-            format_func=lambda x: x['label'], 
-            key=f"q_{i}",
-            index=None,  # เริ่มต้นเป็นค่าว่าง
-            label_visibility="collapsed"
-        )
-        
-        st.markdown("---")
-        
-        if selected_choice is None:
-            all_answered = False
-        else:
-            total_score += selected_choice["score"]
+        choice = st.radio(f"Radio_{i}", item['choices'], format_func=lambda x: x['label'], key=f"q_{i}", index=None, label_visibility="collapsed")
+        st.divider()
+        if choice is None: all_answered = False
+        else: total_score += choice['score']
 
-    # --- 3. SCORING LOGIC ---
-    if not all_answered:
-        st.warning("⚠️ กรุณาตอบให้ครบทุกข้อเพื่อคำนวณผลลัพธ์ (Please answer all questions)")
-        profile = "Waiting..."
-        mean_return = 0.05
-        volatility = 0.10
-    else:
-        # User Logic Mapping
-        if 26 <= total_score <= 30:
-            profile = "Aggressive (ความเสี่ยงสูง)"
-            mean_return, volatility = 0.09, 0.18
-            alloc_text = "Stocks 90% / Bonds 10%"
-        elif 21 <= total_score <= 25:
-            profile = "Moderate to High (ปานกลางค่อนข้างสูง)"
-            mean_return, volatility = 0.07, 0.14
-            alloc_text = "Stocks 70% / Bonds 30%"
-        elif 16 <= total_score <= 20:
-            profile = "Moderate (ปานกลาง)"
-            mean_return, volatility = 0.05, 0.10
-            alloc_text = "Stocks 50% / Bonds 50%"
-        elif 11 <= total_score <= 15:
-            profile = "Cautious (ระมัดระวัง)"
-            mean_return, volatility = 0.04, 0.06
-            alloc_text = "Stocks 30% / Bonds 70%"
-        elif total_score == 10:
-            profile = "Conservative (ความเสี่ยงต่ำ)"
-            mean_return, volatility = 0.03, 0.04
-            alloc_text = "Stocks 10% / Bonds 90%"
-        else:
-            # Fallback (Should not happen given min score is 10)
-            profile = "Conservative"
-            mean_return, volatility = 0.03, 0.04
-            alloc_text = "Stocks 10% / Bonds 90%"
+    if all_answered:
+        if total_score >= 26: profile = "Aggressive (เชิงรุก)"
+        elif total_score >= 16: profile = "Moderate (ปานกลาง)"
+        else: profile = "Conservative (ระมัดระวัง)"
+        st.success(f"คะแนน: {total_score} - {profile}")
 
-        st.header(f"📊 ผลลัพธ์ของคุณ: {total_score} / 30")
-        st.success(f"**Risk Profile:** {profile}")
-    # --- BUTTONS FOR PAGE 2 ---
-    st.markdown("###")
-    col_nav1, col_nav2, col_nav3 = st.columns([1, 8, 1])
-    with col_nav1:
-        st.button("⬅ Back", on_click=prev_step, use_container_width=True)
-    with col_nav3:
-        # Button is disabled until all questions are answered
-        st.button("Next Step ➡", on_click=next_step, type="primary", use_container_width=True, disabled=not all_answered)    
+    c1, c2 = st.columns([1, 8])
+    with c1: st.button("⬅ Back", on_click=prev_step)
+    with c2: st.button("Next Step ➡", on_click=next_step, type="primary", disabled=not all_answered)
+
 # ==========================================
-# TAB 3: ASSET ALLOCATION 
+# PAGE 3: ASSET ALLOCATION
 # ==========================================
 elif st.session_state['current_step'] == 2:
-    st.header("📊 3. Asset Allocation")
-    st.caption("Allocate your portfolio weight (%). Total must be **100%**.")
-    
-    col_thai, col_us = st.columns(2)
-    
-    with col_thai:
-        st.subheader("Thai Assets (%)")
-        w_gov_1y = pct_input("Government Bond 1yr", "gov_1y")
-        w_abfth  = pct_input("Bond Fund (ABFTH)", "abfth")
-        w_seti   = pct_input("Stock Market (SETI)", "seti")
-        w_kblrmf = pct_input("Stock Fund (KBLRMF)", "kblrmf")
-        w_gld    = pct_input("Gold ETF (TH-GLD)", "gld")
-        w_ktoil  = pct_input("Oil ETF (KTOIL)", "ktoil")
-        w_reit   = pct_input("REIT (TH-REIT)", "reit")
+    st.header("📊 3. จัดสรรพอร์ตโฟลิโอ")
+    c1, c2 = st.columns(2)
+    with c1:
+        st.subheader("🇹🇭 Thai Assets")
+        w1 = pct_input("Gov Bond 1y", "gov")
+        w2 = pct_input("Bond Fund", "abf")
+        w3 = pct_input("SET Index", "set")
+        w4 = pct_input("Stock Fund", "rmf")
+        w5 = pct_input("Gold (TH)", "gld")
+        w6 = pct_input("Oil ETF", "oil")
+        w7 = pct_input("REIT (TH)", "reit")
+    with c2:
+        st.subheader("🇺🇸 US Assets")
+        w8 = pct_input("US Gov 1y", "usgov")
+        w9 = pct_input("US Bond Fund", "usbond")
+        w10 = pct_input("S&P 500", "sp5")
+        w11 = pct_input("US Total Stock", "vti")
+        w12 = pct_input("US Gold", "usgld")
+        w13 = pct_input("US Oil", "usoil")
+        w14 = pct_input("US REIT", "usreit")
 
-    with col_us:
-        st.subheader("US Assets (%)")
-        w_us_gov = pct_input("US 1yr Bond", "us_gov")
-        w_vtblx  = pct_input("US Bond Fund (VTBLX)", "vtblx")
-        w_sp500  = pct_input("S&P 500", "sp500")
-        w_vti    = pct_input("US Total Stock (VTI)", "vti")
-        w_us_gld = pct_input("US Gold (SPDR)", "us_gld")
-        w_us_oil = pct_input("US Oil (USO)", "us_oil")
-        w_us_reit= pct_input("US REIT (MSCI)", "us_reit")
+    total = w1+w2+w3+w4+w5+w6+w7+w8+w9+w10+w11+w12+w13+w14
+    if np.isclose(total, 100.0): st.success(f"Total: {total:.0f}% ✅")
+    else: st.error(f"Total: {total:.0f}% (Must be 100%)")
 
-    # Calculate Total
-    total_weight = (
-        w_gov_1y + w_abfth + w_seti + w_kblrmf + w_gld + w_ktoil + w_reit +
-        w_us_gov + w_vtblx + w_sp500 + w_vti + w_us_gld + w_us_oil + w_us_reit
-    )
-    
-    st.divider()
-    col_sum1, col_sum2 = st.columns([2, 2])
-    with col_sum2:
-        st.markdown("### Total Weight")
-        if np.isclose(total_weight, 100.0):
-            st.metric("Status", "✅ Perfect", "100%")
-        elif total_weight > 100.0:
-            st.metric("Status", "❌ Over Limit", f"{total_weight:.1f}%")
-            st.error(f"Remove {total_weight-100:.1f}%")
-        else:
-            st.metric("Status", "⚠️ Under Limit", f"{total_weight:.1f}%")
-            st.warning(f"Add {100-total_weight:.1f}%")
-
-    # --- SAVE DATA FUNCTION ---
-    def save_and_next():
-        # We manually save these inputs to a permanent dictionary
-        st.session_state['saved_weights'] = {
-            'pct_gov_1y': w_gov_1y, 'pct_abfth': w_abfth,
-            'pct_seti': w_seti, 'pct_kblrmf': w_kblrmf,
-            'pct_gld': w_gld, 'pct_ktoil': w_ktoil, 'pct_reit': w_reit,
-            'pct_us_gov': w_us_gov, 'pct_vtblx': w_vtblx,
-            'pct_sp500': w_sp500, 'pct_vti': w_vti,
-            'pct_us_gld': w_us_gld, 'pct_us_oil': w_us_oil, 'pct_us_reit': w_us_reit
+    def save_alloc():
+        st.session_state['alloc'] = {
+            'pct_gov_1y': w1/100, 'pct_abfth': w2/100, 'pct_seti': w3/100, 'pct_kblrmf': w4/100,
+            'pct_gld': w5/100, 'pct_ktoil': w6/100, 'pct_reit': w7/100,
+            'pct_us_gov': w8/100, 'pct_vtblx': w9/100, 'pct_sp500': w10/100, 'pct_vti': w11/100,
+            'pct_us_gld': w12/100, 'pct_us_oil': w13/100, 'pct_us_reit': w14/100
         }
         next_step()
 
-    # --- NAV BUTTONS ---
-    st.markdown("###")
-    col_nav1, col_nav2, col_nav3 = st.columns([1, 8, 1])
-    with col_nav1:
-        st.button("⬅ Back", on_click=prev_step, use_container_width=True)
-    with col_nav3:
-        # Use the new save_and_next function
-        st.button("Next Step ➡", on_click=save_and_next, type="primary", use_container_width=True, disabled=not np.isclose(total_weight, 100.0))
+    c1, c2 = st.columns([1, 8])
+    with c1: st.button("⬅ Back", on_click=prev_step)
+    with c2: st.button("Next Step ➡", on_click=save_alloc, disabled=not np.isclose(total, 100.0), type="primary")
+
 # ==========================================
-# PAGE 4: WITHDRAWAL STRATEGY (Fixed Save Logic)
+# PAGE 4: SIMULATION (FULL FEATURES)
 # ==========================================
 elif st.session_state['current_step'] == 3:
-    st.header("💸 4. Withdrawal Strategy (Monte Carlo)")
-
-    # --- 1. SETUP ASSET DATA ---
-    base_asset_map = {
-        'pct_gov_1y':  ['TH: Gov Bond 1y',   0.022, 0.015],
-        'pct_abfth':   ['TH: Bond Fund',     0.030, 0.040],
-        'pct_seti':    ['TH: SET Index',     0.080, 0.160],
-        'pct_kblrmf':  ['TH: Stock Fund',    0.085, 0.150],
-        'pct_gld':     ['TH: Gold',          0.050, 0.140],
-        'pct_ktoil':   ['TH: Oil ETF',       0.060, 0.250],
-        'pct_reit':    ['TH: REIT',          0.065, 0.120],
-        'pct_us_gov':  ['US: 1y Bond',       0.035, 0.020],
-        'pct_vtblx':   ['US: Bond (VTBLX)',  0.040, 0.050],
-        'pct_sp500':   ['US: S&P 500',       0.100, 0.180],
-        'pct_vti':     ['US: Total Stock',   0.100, 0.185],
-        'pct_us_gld':  ['US: Gold (SPDR)',   0.050, 0.140],
-        'pct_us_oil':  ['US: Oil (USO)',     0.060, 0.300],
-        'pct_us_reit': ['US: REIT (MSCI)',   0.080, 0.170]
-    }
-
-    saved_weights = st.session_state.get('saved_weights', {})
+    st.header("💸 4. Simulation Engine")
     
-    rows = []
-    for key, (name, mu, sigma) in base_asset_map.items():
-        weight = saved_weights.get(key, 0.0) / 100.0
-        if weight > 0:
-            rows.append({"Asset": name, "Weight": weight, "Mean": mu, "Std Dev": sigma})
+    # Asset Stats
+    stats = {
+        'pct_gov_1y': {'mean': 0.022, 'std': 0.015}, 'pct_abfth': {'mean': 0.030, 'std': 0.040},
+        'pct_seti': {'mean': 0.080, 'std': 0.160}, 'pct_kblrmf': {'mean': 0.085, 'std': 0.150},
+        'pct_gld': {'mean': 0.050, 'std': 0.140}, 'pct_ktoil': {'mean': 0.060, 'std': 0.250},
+        'pct_reit': {'mean': 0.065, 'std': 0.120},
+        'pct_us_gov': {'mean': 0.035, 'std': 0.020}, 'pct_vtblx': {'mean': 0.040, 'std': 0.050},
+        'pct_sp500': {'mean': 0.100, 'std': 0.180}, 'pct_vti': {'mean': 0.100, 'std': 0.185},
+        'pct_us_gld': {'mean': 0.050, 'std': 0.140}, 'pct_us_oil': {'mean': 0.060, 'std': 0.300},
+        'pct_us_reit': {'mean': 0.080, 'std': 0.170}
+    }
+    
+    alloc = st.session_state.get('alloc', {})
+    if not alloc: st.error("No allocation!"); st.stop()
+    
+    c1, c2 = st.columns(2)
+    with c1: strat = st.selectbox("Strategy", ["Basic Strategy", "Forgoing Inflation", "RMD Strategy", "Guardrails"])
+    with c2: wd_rate = st.number_input("Withdrawal Rate (%)", 3.0, 10.0, 4.0, 0.1) / 100
+    
+    if st.button("🚀 Run Simulation", type="primary"):
+        sim = RetirementSimulator()
+        with st.spinner("Simulating..."):
+            res = sim.run_simulation(
+                st.session_state['start_port'], alloc, stats, strat, wd_rate, 1000, 30, 
+                st.session_state['inflation'], st.session_state['retire_age']
+            )
+            st.session_state['res'] = res
+            st.session_state['strat'] = strat
+            st.session_state['wd_rate'] = wd_rate
 
-    if not rows:
-        st.error("⚠️ No assets selected. Please go back to Tab 3.")
-    else:
-        # Show Assumptions Table
-        st.info("👇 **Simulation Assumptions:**")
-        df_assumptions = pd.DataFrame(rows)
-        # Use Data Editor so user can tweak assumptions live
-        edited_df = st.data_editor(
-            df_assumptions,
-            column_config={
-                "Weight": st.column_config.NumberColumn(format="%.2f"),
-                "Mean": st.column_config.NumberColumn(format="%.3f"),
-                "Std Dev": st.column_config.NumberColumn(format="%.3f")
-            },
-            disabled=["Asset", "Weight"],
-            hide_index=True,
-            use_container_width=True
-        )
-
-        # Calculate Stats from the EDITED table
-        port_mean = 0.0
-        port_var = 0.0
-        for index, row in edited_df.iterrows():
-            port_mean += row['Weight'] * row['Mean']
-            port_var += (row['Weight'] * row['Std Dev']) ** 2 
-        port_std = np.sqrt(port_var)
-
-        # Inputs
-        start_value = st.session_state.get('money_port', 1000000) + st.session_state.get('money_cash', 200000)
-        inflation_rate = st.session_state.get('inflation_rate', 0.03)
-        target_annual_spending = start_value * 0.04
-
+    # RESULTS
+    if 'res' in st.session_state:
+        res = st.session_state['res']
+        success = res['survival_rate'] * 100
+        median_end = res['median_balance'][-1]
+        
         st.divider()
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Simulated Return", f"{port_mean:.2%}")
-        c2.metric("Simulated Volatility", f"{port_std:.2%}")
-        c3.metric("Initial Withdrawal", f"{target_annual_spending:,.0f} THB", "4% Rule")
-
-        # --- RUN SIMULATION BUTTON ---
-        if st.button("🚀 Run Monte Carlo Simulation", type="primary"):
-            
-            with st.spinner("Running 10,000 simulations..."):
-                years = 30
-                sims = 10000 
-                random_shock = np.random.normal(port_mean, port_std, (years, sims))
-                portfolio_paths = np.zeros((years + 1, sims))
-                portfolio_paths[0] = start_value
-                inflation_factors = (1 + inflation_rate) ** np.arange(years)
-                
-                for t in range(1, years + 1):
-                    prev_balance = portfolio_paths[t-1]
-                    current_withdrawal = target_annual_spending * inflation_factors[t-1]
-                    post_withdrawal = np.maximum(prev_balance - current_withdrawal, 0)
-                    growth = post_withdrawal * (1 + random_shock[t-1])
-                    portfolio_paths[t] = growth
-
-                # Calculate Results
-                final_values = portfolio_paths[-1]
-                success_rate = (np.sum(final_values > 0) / sims) * 100
-                median_result = np.median(final_values)
-                
-                # --- SAVE RESULTS TO SESSION STATE (Fixes the NameError) ---
-                st.session_state['sim_run'] = True
-                st.session_state['sim_success_rate'] = success_rate
-                st.session_state['sim_median_result'] = median_result
-                st.session_state['sim_paths'] = portfolio_paths  # We save the paths for the chart
-
-        # --- DISPLAY RESULTS (Only if Simulation has run) ---
-        if st.session_state.get('sim_run', False):
-            
-            # Retrieve data from session state
-            success_rate = st.session_state['sim_success_rate']
-            median_result = st.session_state['sim_median_result']
-            portfolio_paths = st.session_state['sim_paths']
-            years = 30
-
-            # 1. Metric Cards
-            if success_rate > 90: color = "green"
-            elif success_rate > 75: color = "orange"
-            else: color = "red"
-            st.write(f"### 🎲 Success Rate: :{color}[{success_rate:.1f}%]")
-
-            # 2. Chart
-            p10 = np.percentile(portfolio_paths, 10, axis=1)
-            p50 = np.percentile(portfolio_paths, 50, axis=1)
-            p90 = np.percentile(portfolio_paths, 90, axis=1)
-            x_years = np.arange(years + 1)
-            
-            fig, ax = plt.subplots(figsize=(10, 5))
-            ax.fill_between(x_years, p10, p90, color='blue', alpha=0.15, label="10th-90th Pctl")
-            ax.plot(x_years, p50, color='navy', linewidth=2, label="Median")
-            ax.axhline(0, color='red', linestyle='--', linewidth=1)
-            ax.set_title("30-Year Survival Analysis")
-            ax.set_ylabel("Portfolio Value (THB)")
-            ax.legend(loc="upper left")
-            
-            def millions(x, pos): return f'{x/1e6:.1f}M'
-            ax.yaxis.set_major_formatter(plt.FuncFormatter(millions))
-            st.pyplot(fig)
-
-            # ==========================================
-            # 💾 SAVE DATA (MULTI-PAGE PDF w/ MATPLOTLIB)
-            # ==========================================
-            st.divider()
-            st.subheader("💾 Save Your Plan")
-
-            col_dl1, col_dl2 = st.columns(2)
-
-            # --- 1. PREPARE DATA AS PANDAS DATAFRAMES ---
-            
-            # Data for Page 1 (Health)
-            df_health = pd.DataFrame([
-                ["Current Age", str(st.session_state.get('current_age', 30))],
-                ["Retirement Age", str(st.session_state.get('retire_age', 60))],
-                ["Investable Assets", f"{start_value:,.0f}"],
-                ["Total Debt", f"{st.session_state.get('money_debt_home',0) + st.session_state.get('money_debt_car',0):,.0f}"],
-                ["Monthly Income", f"{st.session_state.get('money_inc_sal',0) + st.session_state.get('money_inc_bonus',0):,.0f}"],
-                ["Monthly Savings", f"{st.session_state.get('money_save',0):,.0f}"],
-            ], columns=["Item", "Value"])
-
-            # Data for Page 2 (Simulation)
-            data_sim = [
-                ["Success Rate (30y)", f"{success_rate:.1f}%"],
-                ["Median End Value", f"{median_result:,.0f} THB"],
-                ["Exp. Annual Return", f"{port_mean*100:.2f}%"],
-                ["Volatility (Risk)", f"{port_std*100:.2f}%"],
-                ["Initial Withdrawal", f"{target_annual_spending:,.0f} THB"],
-            ]
-            # Append Asset Allocation to Page 2
-            saved_weights = st.session_state.get('saved_weights', {})
-            for key, val in saved_weights.items():
-                if val > 0:
-                    data_sim.append([f"Alloc: {key.replace('pct_', '').upper()}", f"{val:.2f}%"])
-            
-            df_sim = pd.DataFrame(data_sim, columns=["Metric", "Value"])
-
-            # --- 2. PDF GENERATOR FUNCTION ---
-            import io
-            from matplotlib.backends.backend_pdf import PdfPages
-
-            def create_multipage_pdf():
-                buffer = io.BytesIO()
-                with PdfPages(buffer) as pdf:
-                    
-                    # --- PAGE 1: Health Table ---
-                    fig1, ax1 = plt.subplots(figsize=(8, 11))
-                    ax1.axis('tight')
-                    ax1.axis('off')
-                    ax1.set_title("Page 1: Financial Health Profile", fontsize=16, y=0.95)
-                    
-                    table1 = ax1.table(cellText=df_health.values, colLabels=df_health.columns, loc='center', cellLoc='left')
-                    table1.scale(1, 2) # Make rows taller
-                    table1.auto_set_font_size(False)
-                    table1.set_fontsize(12)
-                    
-                    # Grey Header
-                    for (i, j), cell in table1.get_celld().items():
-                        if i == 0: cell.set_facecolor('#e6e6e6')
-
-                    pdf.savefig(fig1, bbox_inches='tight')
-                    plt.close(fig1)
-
-                    # --- PAGE 2: Simulation Table ---
-                    fig2, ax2 = plt.subplots(figsize=(8, 11))
-                    ax2.axis('tight')
-                    ax2.axis('off')
-                    ax2.set_title("Page 2: Portfolio & Simulation Results", fontsize=16, y=0.95)
-                    
-                    table2 = ax2.table(cellText=df_sim.values, colLabels=df_sim.columns, loc='center', cellLoc='left')
-                    table2.scale(1, 1.5)
-                    table2.auto_set_font_size(False)
-                    table2.set_fontsize(10)
-                    
-                    for (i, j), cell in table2.get_celld().items():
-                        if i == 0: cell.set_facecolor('#e6e6e6')
-
-                    pdf.savefig(fig2, bbox_inches='tight')
-                    plt.close(fig2)
-
-                    # --- PAGE 3: The Chart ---
-                    # We redraw the cone chart just for the PDF
-                    fig3, ax3 = plt.subplots(figsize=(10, 6))
-                    
-                    # Re-calc percentiles (quick access)
-                    p10 = np.percentile(portfolio_paths, 10, axis=1)
-                    p50 = np.percentile(portfolio_paths, 50, axis=1)
-                    p90 = np.percentile(portfolio_paths, 90, axis=1)
-                    x_years = np.arange(years + 1)
-
-                    ax3.fill_between(x_years, p10, p90, color='blue', alpha=0.15, label="10th-90th Pctl")
-                    ax3.plot(x_years, p50, color='navy', linewidth=2, label="Median")
-                    ax3.axhline(0, color='red', linestyle='--', linewidth=1)
-                    ax3.set_title("Page 3: 30-Year Wealth Projection", fontsize=14)
-                    ax3.set_ylabel("Portfolio Value (THB)")
-                    ax3.legend(loc="upper left")
-                    
-                    pdf.savefig(fig3)
-                    plt.close(fig3)
-
-                return buffer.getvalue()
-
-            # --- 3. DOWNLOAD BUTTONS ---
-            with col_dl1:
-                # PDF Export (Multi-page)
-                pdf_bytes = create_multipage_pdf()
-                st.download_button(
-                    label="📕 Download Report (.pdf)",
-                    data=pdf_bytes,
-                    file_name="financial_report.pdf",
-                    mime="application/pdf"
+        c1, c2 = st.columns(2)
+        color = "green" if success > 85 else "red"
+        c1.markdown(f"### Success Rate: :{color}[{success:.1f}%]")
+        c2.metric("Median End Balance", f"{median_end:,.0f} THB")
+        
+        # --- PLOT ---
+        fig, ax = plt.subplots(figsize=(10, 5))
+        x = range(31)
+        ax.fill_between(x, res['percentile_10'], res['percentile_90'], alpha=0.2, color='blue', label='10-90th Pctl')
+        ax.plot(x, res['median_balance'], color='navy', label='Median')
+        ax.axhline(0, color='red', linestyle='--', label='Depleted')
+        ax.legend()
+        st.pyplot(fig)
+        
+        # --- RECOMMENDATIONS ---
+        if success < 85:
+            st.error(f"⚠️ Survival Rate ({success:.1f}%) is below 85% target.")
+            sim = RetirementSimulator()
+            recs = sim.recommend_improvements(res['survival_rate'], alloc, st.session_state['wd_rate'])
+            with st.expander("💡 View Recommendations", expanded=True):
+                for r in recs: st.write(r)
+        
+        # --- OPTIMIZER ---
+        st.divider()
+        if st.button("🔍 Find Optimal Withdrawal Rate"):
+            sim = RetirementSimulator()
+            with st.spinner("Optimizing..."):
+                opt_rate = sim.find_optimal_withdrawal_rate(
+                    st.session_state['start_port'], alloc, stats, st.session_state['strat'], 
+                    30, st.session_state['inflation'], st.session_state['retire_age']
                 )
+            st.success(f"✅ Optimal Safe Withdrawal Rate: **{opt_rate*100:.2f}%**")
+            st.caption(f"(Targeting > 85% Success with {st.session_state['strat']})")
 
-    # --- NAV BUTTONS ---
+        # --- MULTI-PAGE PDF ---
+        st.divider()
+        st.subheader("💾 Save Your Plan")
+        
+        col_d1, col_d2 = st.columns(2)
+        
+        df_health = pd.DataFrame([
+            ["Investable Assets", f"{st.session_state['start_port']:,.0f}"],
+            ["Total Debt", f"{st.session_state.get('money_debt',0):,.0f}"],
+            ["Savings/Mo", f"{st.session_state.get('money_save',0):,.0f}"]
+        ], columns=["Metric", "Value"])
+
+        df_sim = pd.DataFrame([
+            ["Success Rate", f"{success:.1f}%"],
+            ["Median End", f"{median_end:,.0f}"],
+            ["Strategy", st.session_state['sim_strat']]
+        ], columns=["Metric", "Value"])
+
+        def create_pdf():
+            buffer = io.BytesIO()
+            with PdfPages(buffer) as pdf:
+                # Page 1
+                f1, a1 = plt.subplots(figsize=(8,11))
+                a1.axis('off')
+                a1.set_title("Page 1: Health Profile", fontsize=16)
+                t1 = a1.table(cellText=df_health.values, colLabels=df_health.columns, loc='center')
+                t1.scale(1, 2)
+                pdf.savefig(f1); plt.close(f1)
+                # Page 2
+                f2, a2 = plt.subplots(figsize=(8,11))
+                a2.axis('off')
+                a2.set_title("Page 2: Simulation Results", fontsize=16)
+                t2 = a2.table(cellText=df_sim.values, colLabels=df_sim.columns, loc='center')
+                t2.scale(1, 2)
+                pdf.savefig(f2); plt.close(f2)
+                # Page 3
+                f3, a3 = plt.subplots(figsize=(10,6))
+                a3.fill_between(x, res['percentile_10'], res['percentile_90'], alpha=0.2, color='blue')
+                a3.plot(x, res['median_balance'], color='navy')
+                a3.axhline(0, color='red', linestyle='--')
+                a3.set_title("Page 3: Wealth Projection")
+                pdf.savefig(f3); plt.close(f3)
+            return buffer.getvalue()
+
+        with col_d1:
+            csv = df_sim.to_csv().encode('utf-8-sig')
+            st.download_button("📄 CSV", csv, "data.csv", "text/csv")
+        with col_d2:
+            st.download_button("📕 PDF Report", create_pdf(), "report.pdf", "application/pdf")
+
     st.markdown("###")
-    col_nav1, col_nav2 = st.columns([1, 9])
-    with col_nav1:
-        st.button("⬅ Back", on_click=prev_step, use_container_width=True)
-    with col_nav2:
-        if st.button("🔄 Reset App"):
-            st.session_state['current_step'] = 0
-            st.rerun()
+    st.button("🔄 Reset App", on_click=lambda: st.session_state.update({'current_step': 0}))
