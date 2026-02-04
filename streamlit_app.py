@@ -683,7 +683,7 @@ if st.session_state["current_step"] == 0:
 
     c1, c2, c3 = st.columns(3)
     with c1:
-        st.text_input("ชื่อ", key="user_name", placeholder="ชื่อของคุณ")
+        st.text_input("ชื่อ", key="user_name")
     with c2:
         st.number_input("อายุเกษียณ", min_value=40, max_value=100, value=60, key="retire_age", on_change=validate_ages)
     with c3:
