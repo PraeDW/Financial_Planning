@@ -184,11 +184,12 @@ class RetirementSimulator:
         asset_stats,
         withdrawal_strategy,
         withdrawal_rate,
-        n_simulations,
         years,
         inflation_rate,
         starting_age,
-        returns_override=None,
+        returns_override=None, 
+        inheritance_goal=0.0,
+        n_simulations=50000
         ):
         returns = returns_override if returns_override is not None else self.simulate_returns(
         portfolio_allocation, asset_stats, n_simulations, years
@@ -214,7 +215,6 @@ class RetirementSimulator:
                     initial_portfolio, withdrawal_rate, inflation_rate, returns[sim], years
                 )
 
-            # ✅ PAD to fixed lengths
             if len(balances) < years + 1:
                 balances = balances + [0.0] * ((years + 1) - len(balances))
             else:
@@ -235,6 +235,7 @@ class RetirementSimulator:
 
         return {
             "survival_rate": float(np.mean(final_values > 0)),
+            "inheritance_success_rate": float(np.mean(final_values >= inheritance_goal)),
             "median_balance": np.median(all_balances, axis=0),
             "percentile_10": np.percentile(all_balances, 10, axis=0),
             "percentile_90": np.percentile(all_balances, 90, axis=0),
@@ -244,7 +245,6 @@ class RetirementSimulator:
             "withdrawal_p10": np.percentile(all_withdrawals, 10, axis=0),
             "withdrawal_p90": np.percentile(all_withdrawals, 90, axis=0),
         }
-
 
     # -------------------------
     # RECOMMENDATIONS (fix key mismatch)
@@ -288,7 +288,7 @@ class RetirementSimulator:
         inflation_rate,
         starting_age,
         min_survival_rate=0.85,
-        n_simulations=800,
+        n_simulations=50000,
     ):
         low_rate = 0.01
         high_rate = min(0.12, max(0.06, initial_rate * 2))
@@ -306,10 +306,10 @@ class RetirementSimulator:
                 asset_stats,
                 withdrawal_strategy,
                 test_rate,
-                n_simulations,
                 years,
                 inflation_rate,
                 starting_age,
+                n_simulations=n_simulations
             )
             if results["survival_rate"] >= min_survival_rate:
                 best_rate = test_rate
@@ -329,8 +329,7 @@ class RetirementSimulator:
         years,
         inflation_rate,
         starting_age,
-        n_simulations=10000,
-        returns_override=None,
+        n_simulations=50000,
     ):
         results = []
         for wd in wd_grid:
@@ -344,7 +343,7 @@ class RetirementSimulator:
                 years=years,
                 inflation_rate=inflation_rate,
                 starting_age=starting_age,
-                returns_override=returns_override,  # ✅ reuse
+                returns_override=None,  # ✅ reuse
             )
             results.append({
                 "withdrawal_rate": wd,
@@ -456,6 +455,7 @@ def build_full_report_csv(export_data, res, alloc, years=30):
     inflation = export_data.get("inflation", None)
 
     retire_age_int = to_int(retire_age, None)
+    inheritance = export_data.get("inheritance_goal", None)
 
     # --- Cashflow (annual) ---
     total_income = export_data.get("total_income")
@@ -485,6 +485,7 @@ def build_full_report_csv(export_data, res, alloc, years=30):
     rows.append(["PROFILE", "Name", name])
     rows.append(["PROFILE", "Retire Age", retire_age])
     rows.append(["PROFILE", "Life Expectancy", life_exp])
+    rows.append(["PROFILE", "Inheritance Goal (THB)", fnum(inheritance, 2)])
 
     if inflation is not None:
         rows.append(["SETTINGS", "Inflation", fpct(inflation)])
@@ -520,22 +521,6 @@ def build_full_report_csv(export_data, res, alloc, years=30):
             rows.append(["ALLOCATION", label, f"{float(v)*100:.2f}"])
     else:
         rows.append(["ALLOCATION", "No allocation found", ""])
-
-    # --- Sensitivity (WD rate) ---
-    rows.append([])
-    rows.append(["SENSITIVITY (WD RATE)", "", ""])
-    rows.append(["Withdrawal Rate", "Survival Rate", "Median End Balance"])
-
-    sens = export_data.get("sensitivity")
-    if sens:
-        for r in sens:
-            rows.append([
-                f"{float(r['withdrawal_rate'])*100:.2f}%",
-                f"{float(r['survival_rate'])*100:.1f}%",
-                f"{float(r['median_end_balance']):,.0f}",
-            ])
-    else:
-        rows.append(["No sensitivity results", "", ""])
 
     # =========================
     # SECTION B: YEARLY PROJECTION
@@ -608,7 +593,7 @@ def build_pdf_bytes(data, res):
         import matplotlib.pyplot as plt
         f1, a1 = plt.subplots(figsize=(8, 11))
         a1.axis("off")
-        a1.set_title("Financial Health Report", fontsize=18, fontweight="bold", pad=20)
+        a1.set_title("Financial Report", fontsize=18, fontweight="bold", pad=20)
 
         y = 0.85
         a1.text(0.1, y, f"Name: {data['name']}", fontsize=12, fontweight="bold"); y -= 0.03
@@ -780,11 +765,10 @@ if st.session_state["current_step"] == 0:
     # inflation (store as 'inflation' ONLY)
     st.session_state["inflation"] = st.slider("เงินเฟ้อคาดการณ์ (%)", 0.0, 10.0, 3.0, 0.1) / 100
 
-    st.subheader("เป้าหมายทางการเงิน (Goal)")
-    with st.expander("📝 รายละเอียดเป้าหมายทางการเงิน", expanded=True):
-        st.session_state["target_amount"] = money_input("จำนวนเงินที่ต้องการ (THB)", 0, "goal_amount")
-        st.session_state["importance_level"] = st.slider("ระดับความสำคัญ (%)", 0, 100, 10)
-
+    st.subheader("Inheritance Goals")
+    with st.expander("📝 เป้าหมายมรดกที่ต้องการ", expanded=True):
+        st.session_state["inheritance_goal"] = money_input("จำนวนเงินที่ต้องการ (THB)", 0, "inheritance_goal")
+        
     c_nav1,c_nav2 = st.columns([10, 3])
     with c_nav2:
         st.button("Next Step ➡", on_click=next, type="primary")
@@ -847,17 +831,17 @@ elif st.session_state["current_step"] == 2:
     c1, c2 = st.columns(2)
     w1 = pct_input("Fix Deposit", "deposit")
     with c1:
-        st.subheader("Thai Equity")
+        st.subheader("Thai Asset")
         w2 = pct_input("Government Bond 1 year", "gov_bond")
-        w3 = pct_input("SET", "seti")
-        w4 = pct_input("Gold", "XAUTHB")
-        w5 = pct_input("REITs", "REITTH")
+        w3 = pct_input("Thai Equity", "seti")
+        w4 = pct_input("Gold(XAUTHB)", "XAUTHB")
+        w5 = pct_input("Thai REITs", "REITTH")
     with c2:
         st.subheader("Global Equity")
-        w6 = pct_input("MSCI stock", "msci_stock")
-        w7 = pct_input("MSCI government bond", "msci_gov_bond")
-        w8 = pct_input("Gold US", "XAUUSD")
-        w9 = pct_input("REITs", "MSCIREITs")
+        w6 = pct_input("Global government bond", "msci_gov_bond")
+        w7 = pct_input("Global stock", "msci_stock")
+        w8 = pct_input("Gold(XAUUSD)", "XAUUSD")
+        w9 = pct_input("Global REITs", "MSCIREITs")
 
     total = w1 + w2 + w3 + w4 + w5 + w6 + w7 + w8 + w9
     if np.isclose(total, 100.0):
@@ -895,16 +879,16 @@ elif st.session_state["current_step"] == 3:
     N_SIM = 10000
 
     asset_stats = {
-        "pct_deposit": {"mean": 0.0505, "std": 0.0572},
-        "pct_gov_bond": {"mean": 0.0206, "std": 0.0125},
+        "pct_deposit": {"mean": 0.0206, "std": 0.0125},
+        "pct_gov_bond": {"mean": 0.0505, "std": 0.0572},
         "pct_seti": {"mean": 0.1227, "std": 0.3266},
         "pct_XAUTHB": {"mean": 0.065, "std": 0.150},
         "pct_REITTH": {"mean": 0.070, "std": 0.200},
 
-        "pct_msci_stock": {"mean": 0.030, "std": 0.025},
-        "pct_msci_gov_bond": {"mean": 0.040, "std": 0.035},
-        "pct_XAUUSD": {"mean": 0.060, "std": 0.200},
-        "pct_MSCIREITs": {"mean": 0.070, "std": 0.160}
+        "pct_msci_stock": {"mean": 0.0926, "std": 0.1852},
+        "pct_msci_gov_bond": {"mean": 0.0926, "std": 0.1852},
+        "pct_XAUUSD": {"mean": 0.1175, "std": 0.1752},
+        "pct_MSCIREITs": {"mean": 0.0926, "std": 0.1853}
     }
 
     alloc = st.session_state.get("saved_alloc", {})
@@ -933,7 +917,7 @@ elif st.session_state["current_step"] == 3:
         sim = RetirementSimulator()
         with st.spinner("Simulating..."):
             mc_returns = sim.simulate_returns(alloc, asset_stats, N_SIM, YEARS)
-            st.session_state["mc_returns"] = mc_returns  # ✅ cache returns
+            st.session_state["mc_returns"] = mc_returns  
 
             res = sim.run_simulation(
                 initial_portfolio=start_port,
@@ -944,9 +928,7 @@ elif st.session_state["current_step"] == 3:
                 n_simulations=N_SIM,
                 years=YEARS,
                 inflation_rate=inflation,
-                starting_age=retire_age,
-                returns_override=mc_returns,  # ✅ reuse the same returns
-            )
+                starting_age=retire_age)
 
         st.session_state["res"] = res
         st.session_state["sim_strat"] = strat_selection
@@ -957,75 +939,57 @@ elif st.session_state["current_step"] == 3:
         st.session_state.pop("export_csv_bytes", None)
 
     # =========================
-    # 2) RUN SENSITIVITY (reuse cached returns, no new random)
-    # =========================
-    if st.button("📊 Run Sensitivity Analysis"):
-        mc_returns = st.session_state.get("mc_returns", None)
-        if mc_returns is None:
-            st.error("กรุณากด Run Simulation ก่อน เพื่อสร้าง Monte Carlo returns (จะได้ไม่สุ่มใหม่)")
-        else:
-            sim = RetirementSimulator()
-            wd_grid = [0.02, 0.025, 0.03, 0.035, 0.04, 0.045, 0.05]
-            with st.spinner("Running sensitivity..."):
-                sens = sim.sensitivity_withdrawal_rate(
-                    initial_portfolio=start_port,
-                    portfolio_allocation=alloc,
-                    asset_stats=asset_stats,
-                    withdrawal_strategy=strat_selection,
-                    wd_grid=wd_grid,
-                    years=YEARS,
-                    inflation_rate=inflation,
-                    starting_age=retire_age,
-                    n_simulations=N_SIM,
-                    returns_override=mc_returns,  # ✅ reuse
-                )
-
-            st.session_state["sensitivity"] = sens
-            st.session_state["sensitivity_settings"] = {
-                "strategy": strat_selection,
-                "years": YEARS,
-                "inflation": inflation,
-                "start_port": start_port,
-                "retire_age": retire_age,
-            }
-
-    # =========================
     # 3) RESULTS
     # =========================
     if "res" in st.session_state:
         res = st.session_state["res"]
+        inh_goal = st.session_state.get("inheritance_goal", 0.0) # Retrieve goal
+        
         success = res["survival_rate"] * 100
+        inh_success = res.get("inheritance_success_rate", 0.0) * 100 # Retrieve new rate
         median_end = res["median_balance"][-1]
 
         st.divider()
-        c1, c2 = st.columns(2)
-        color = "green" if success > 85 else "red"
-        c1.markdown(f"### Success Rate: :{color}[{success:.1f}%]")
-        c2.metric("Median End Balance (Year 30)", f"{median_end:,.0f} THB")
+        
+        # Updated Metrics Layout
+        m1, m2, m3 = st.columns(3)
+        
+        color_surv = "green" if success > 85 else "red"
+        m1.markdown(f"### Survival Rate: :{color_surv}[{success:.1f}%]")
+        m1.caption("Chance money lasts > 30 years")
+        
+        m2.metric("Median End Balance", f"{median_end:,.0f} THB")
+        
+        # New Metric for Inheritance
+        color_inh = "green" if inh_success > 50 else "orange" # You can adjust this threshold
+        m3.markdown(f"### Inheritance Success: :{color_inh}[{inh_success:.1f}%]")
+        m3.caption(f"Chance to leave ≥ {inh_goal:,.0f}")
 
-        # ✅ Graph AFTER median_end, BEFORE recommendations (as requested)
+        # ✅ Graph Update
         fig, ax = plt.subplots(figsize=(10, 5))
         x = range(len(res["median_balance"]))
+        
+        # Plot areas
         ax.fill_between(x, res["percentile_10"], res["percentile_90"], alpha=0.2, label="10-90th Pctl")
-        ax.plot(x, res["median_balance"], label="Median")
-        ax.axhline(0, linestyle="--", label="Depleted")
-        ax.legend()
+        ax.plot(x, res["median_balance"], label="Median Balance")
+        
+        # 1. Zero Line (Depleted)
+        ax.axhline(0, color='red', linestyle="--", linewidth=1, label="Depleted (0)")
+        
+        # 2. Inheritance Line (Only if goal > 0)
+        if inh_goal > 0:
+            ax.axhline(inh_goal, color='purple', linestyle="-.", linewidth=1.5, label=f"Inheritance Goal ({inh_goal:,.0f})")
+
+        ax.legend(loc='upper left')
         ax.set_xlabel("Year")
         ax.set_ylabel("Portfolio Value (THB)")
         ax.set_title("Wealth Projection")
-        st.pyplot(fig)
+        
+        # Format Y-axis to standard comma notation
+        ax.get_yaxis().set_major_formatter(
+            plt.FuncFormatter(lambda x, p: format(int(x), ',')))
 
-        # =========================
-        # 4) SENSITIVITY DISPLAY (table only, no graph)
-        # =========================
-        if "sensitivity" in st.session_state:
-            st.subheader("📌 Sensitivity (Withdrawal Rate)")
-            df = pd.DataFrame(st.session_state["sensitivity"]).copy()
-            df["Withdrawal %"] = df["withdrawal_rate"] * 100
-            df["Survival %"] = df["survival_rate"] * 100
-            df = df[["Withdrawal %", "Survival %", "median_end_balance"]]
-            df = df.rename(columns={"median_end_balance": "Median End Balance (THB)"})
-            st.dataframe(df, use_container_width=True)
+        st.pyplot(fig)
 
         # =========================
         # 5) Recommendations
@@ -1086,15 +1050,25 @@ elif st.session_state["current_step"] == 3:
 
         raw_name = st.session_state.get("profile_name") or st.session_state.get("user_name")
         name = (raw_name or "").strip() or "ไม่ระบุชื่อ"
+        retire_age = (st.session_state.get('retire_age') or 
+                  st.session_state.get('m_retire_age') or 
+                  st.session_state.get('v_retire_age') or 
+                  60) # Default if nothing found
+
+    # --- FIX: Try ALL possible keys for Life Expectancy ---
+        life_exp = (st.session_state.get('life_expectancy') or 
+                    st.session_state.get('m_life_expectancy') or 
+                    st.session_state.get('v_life_expectancy') or 
+                    85) # Default if nothing found
 
         export_data = {
             "name": name,
-            "retire_age": st.session_state.get("retire_age", 60),
-            "life_exp": st.session_state.get("life_expectancy", 85),
+            "retire_age": retire_age,
+            "life_exp": life_exp,
             "inflation": st.session_state.get("inflation", 0.03),
             "sim_strat": st.session_state.get("sim_strat", "-"),
-            "wd_rate": st.session_state.get("wd_rate", 0.0),
-            "sensitivity": st.session_state.get("sensitivity", None),
+            "wd_rate": st.session_state.get("wd_rate", 0.0),    
+            "inheritance_goal": st.session_state.get("inheritance_goal", 0.0)
         }
 
         # numeric v_* keys
